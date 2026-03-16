@@ -1,0 +1,154 @@
+name: ai-generated-pr-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ai-pr-summary:
+    name: AI PR Summary (Low-Latency Model)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    # Only run on PRs that have the 'ai-generated' label or contain '[AI]' in the title
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'ai-generated') ||
+      contains(github.event.pull_request.title, '[AI]')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate AI PR summary
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Placeholder: call your internal ai-wrapper tool or API
+          # Default model: low-latency (Turbo / Haiku / Flash)
+          # Usage: ./ai-wrapper summarize-pr --model turbo --pr $PR_NUMBER --out pr-ai-summary.md
+          echo "AI PR summary step: replace this with your internal ai-wrapper call."
+          echo "PR #$PR_NUMBER: $PR_TITLE" > pr-ai-summary.md
+
+      - name: Upload PR summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-ai-summary
+          path: pr-ai-summary.md
+          retention-days: 7
+
+  validate-tests:
+    name: Validate Tests (Required for AI-Generated Code)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up environment
+        run: |
+          # Placeholder: install language runtime and dependencies
+          # Example for Node.js:
+          # node --version
+          # npm ci
+          echo "Set up your environment here."
+
+      - name: Run linter
+        run: |
+          # Placeholder: run your project linter
+          # Example: npm run lint
+          echo "Run your linter here."
+
+      - name: Run tests
+        run: |
+          # Placeholder: run your test suite
+          # Example: npm test
+          echo "Run your tests here."
+
+      - name: Check test coverage threshold
+        run: |
+          # Placeholder: enforce minimum test coverage (recommended >= 80%)
+          # Example: npm run coverage -- --threshold=80
+          echo "Check test coverage threshold here."
+
+  change-size-gate:
+    name: Change Size Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Count changed files
+        id: count_files
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | wc -l)
+          echo "changed_files=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "Changed files: $CHANGED"
+
+      - name: Enforce review requirement for large changes
+        env:
+          CHANGED_FILES: ${{ steps.count_files.outputs.changed_files }}
+        run: |
+          THRESHOLD=10
+          if [ "$CHANGED_FILES" -gt "$THRESHOLD" ]; then
+            echo "⚠️  WARNING: This PR changes $CHANGED_FILES files (threshold: $THRESHOLD)."
+            echo "Per SOP § 六: changes affecting > $THRESHOLD files require manual Code Review"
+            echo "and Architecture Owner approval before merging."
+            # Set to exit 1 to BLOCK merge; set to exit 0 to WARN only.
+            # Recommended: start with exit 0 (warn), switch to exit 1 after team alignment.
+            exit 0
+          else
+            echo "✅ Change size within threshold ($CHANGED_FILES / $THRESHOLD files)."
+          fi
+
+  breaking-change-check:
+    name: Breaking Change Detection
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect breaking change indicators
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          DIFF=$(git diff "$BASE_SHA" "$HEAD_SHA" -- . \
+            ':(exclude)*.lock' ':(exclude)node_modules')
+
+          # Check for common breaking change patterns
+          BREAKING=0
+
+          # Database schema changes
+          if echo "$DIFF" | grep -qiE '(CREATE TABLE|DROP TABLE|ALTER TABLE|DROP COLUMN)'; then
+            echo "⚠️  DB schema change detected — ensure migration script and rollback plan exist."
+            BREAKING=1
+          fi
+
+          # API contract changes (common patterns)
+          if echo "$DIFF" | grep -qE '^[-].*(@DeleteMapping|@PutMapping|DELETE /|PUT /)' || \
+             echo "$DIFF" | grep -qE '^[-].*(router\.(delete|put)|app\.(delete|put))'; then
+            echo "⚠️  Possible API contract removal/change detected — verify backward compatibility."
+            BREAKING=1
+          fi
+
+          if [ "$BREAKING" -eq 1 ]; then
+            echo ""
+            echo "Action required per SOP § 五 & § 六:"
+            echo "  1. Confirm rollback script exists (attach to PR description)."
+            echo "  2. Confirm Canary plan is defined."
+            echo "  3. Obtain approval from Architecture Owner and SRE lead."
+            # exit 0 = warn only; change to exit 1 to block merge
+            exit 0
+          else
+            echo "✅ No obvious breaking change indicators found."
+          fi
